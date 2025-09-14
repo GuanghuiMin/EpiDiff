@@ -43,13 +43,10 @@ class TransformerBlock(nn.Module):
         )
 
     def forward(self, x, t_emb, attn_bias):
-        # Self-attention block with graph attention bias
-        # The float tensor attn_bias will be added to the attention scores before softmax.
         x_modulated = self.adaLN1(x, t_emb)
         attn_output, _ = self.attn(x_modulated, x_modulated, x_modulated, attn_mask=attn_bias)
         x = x + attn_output
 
-        # Feed-forward block
         x_modulated = self.adaLN2(x, t_emb)
         ffn_output = self.ffn(x_modulated)
         x = x + ffn_output
@@ -125,15 +122,9 @@ class STGTransformer(nn.Module):
             x = self.final_norm(x)
             x = x.reshape(B, self.V, self.T_total, self.d_h)
 
-            # --- FIX IS HERE ---
-            # 1. Permute to make the time dimension last: (B, V, T_total, d_h)
             x = x.permute(0, 1, 3, 2)
-            # 2. Apply the linear layer to the time dimension
             x = self.temporal_out_proj(x)
-            # 3. Permute back for the final convolution: (B, d_h, V, T)
             x = x.permute(0, 2, 1, 3)
-            # --- END OF FIX ---
-
             e = self.out(x)
 
             return e

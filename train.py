@@ -6,20 +6,18 @@ import numpy as np
 import torch.utils.data
 from easydict import EasyDict as edict
 from timeit import default_timer as timer
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime, timedelta
+import pickle
+import json
 
 from utils.eval import Metric
 from utils.gpu_dispatch import GPU
 from utils.common_utils import dir_check, to_device, ws, unfold_dict, dict_merge, GpuId2CudaId, Logger
 
-from algorithm.dataset import CleanDataset, TrafficDataset
+from algorithm.dataset import CleanDataset, EpiDataset
 from algorithm.diffstg.model import DiffSTG, save2file
-from baselines.ar import ar
-from baselines.stgcn import stgcn_forecast
-from baselines.cnnrnn_res import cnnrnn_forecast
-from baselines.colagnn import colagnn_forecast
-from baselines.epicolagnn import epicolagnn_forecast
-from baselines.stgode import stgode_forecast
-# from baselines.stan import stan_forecast
 
 
 def setup_seed(seed):
@@ -29,6 +27,384 @@ def setup_seed(seed):
     np.random.seed(seed)
     # random.seed(seed)
     torch.backends.cudnn.deterministic = True
+
+
+def get_complete_time_series(model, data_loader, config, clean_data):
+    """Get complete time series data for ALL test samples - no sampling limit"""
+    
+    print(f"Getting complete time series data for ALL {len(data_loader.dataset)} test samples...")
+    
+    # Always start fresh - remove any existing checkpoint
+    checkpoint_path = './temp_evaluation_checkpoint.pkl'
+    if os.path.exists(checkpoint_path):
+        print("Removing existing checkpoint to ensure fresh evaluation...")
+        try:
+            os.remove(checkpoint_path)
+            print("Old checkpoint removed successfully")
+        except Exception as e:
+            print(f"Failed to remove checkpoint: {e}")
+    
+    model.eval()
+    setup_seed(2025)
+    
+    # Store all time series data
+    all_histories = []
+    all_true_futures = []
+    all_pred_futures = []
+    all_start_indices = []
+    
+    sample_count = 0
+    total_batches = len(data_loader)
+    
+    print(f"📊 Processing {total_batches} batches (batch_size={data_loader.batch_size})...")
+    
+    with torch.no_grad():
+        for i, batch in enumerate(data_loader):
+            # Progress indicator
+            progress = (i + 1) / total_batches * 100
+            print(f"Processing batch {i+1}/{total_batches} ({progress:.1f}%) - Samples collected: {sample_count}", end='\r', flush=True)
+                
+            future, history, pos_w, pos_d = to_device(batch, config.device)
+            
+            # Prepare input
+            x = torch.cat((history, future), dim=1).to(config.device)
+            x_masked = torch.cat((history, torch.zeros_like(future)), dim=1).to(config.device)
+            
+            # Reshape for model
+            x = x.transpose(1, 3)  # (B, F, V, T)
+            x_masked = x_masked.transpose(1, 3)  # (B, F, V, T)
+            
+            # Model inference with explicit memory cleanup
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None  # Clear GPU cache
+            x_hat = model((x_masked, pos_w, pos_d), config.n_samples)
+            
+            if x_hat.shape[-1] != (config.model.T_h + config.model.T_p):
+                x_hat = x_hat.transpose(2, 4)
+            
+            # Denormalize
+            x = clean_data.reverse_normalization(x)
+            x_hat = clean_data.reverse_normalization(x_hat)
+            x_hat = x_hat.detach()
+            
+            # Extract parts
+            h_x = x[:, :, :, :config.model.T_h]  # true history
+            f_x = x[:, :, :, -config.model.T_p:]  # true future
+            f_x_hat = x_hat[:, :, :, :, -config.model.T_p:]  # predicted future
+            
+            # Convert to numpy and take mean across samples
+            history_data = h_x.transpose(1, 3).cpu().numpy()  # (B, T_h, V, D)
+            true_future = f_x.transpose(1, 3).cpu().numpy()  # (B, T_p, V, D)
+            pred_future = f_x_hat.transpose(2, 4).cpu().numpy()  # (B, n_samples, T_p, V, D)
+            pred_future = np.clip(pred_future, 0, np.inf)
+            pred_future = np.mean(pred_future, axis=1)  # (B, T_p, V, D)
+            
+            # Store each sample in the batch
+            batch_size = history_data.shape[0]
+            for b in range(batch_size):
+                all_histories.append(history_data[b])  # (T_h, V, D)
+                all_true_futures.append(true_future[b])  # (T_p, V, D)
+                all_pred_futures.append(pred_future[b])  # (T_p, V, D)
+                # Calculate the actual start index in the original data
+                start_idx = config.data.test_start_idx + config.model.T_p + i * data_loader.batch_size + b
+                all_start_indices.append(start_idx)
+                sample_count += 1
+            
+            # Clear intermediate variables to free memory
+            del x, x_masked, x_hat, history_data, true_future, pred_future
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    print(f"\n Successfully collected ALL {len(all_histories)} test samples!")
+    print(f"   Expected: {len(data_loader.dataset)} | Collected: {len(all_histories)}")
+    
+    # Save checkpoint for future use
+    checkpoint = {
+        'histories': all_histories,
+        'true_futures': all_true_futures, 
+        'pred_futures': all_pred_futures,
+        'start_indices': all_start_indices
+    }
+    try:
+        with open(checkpoint_path, 'wb') as f:
+            pickle.dump(checkpoint, f)
+        print(f"Saved evaluation results to checkpoint: {checkpoint_path}")
+    except Exception as e:
+        print(f"Failed to save checkpoint: {e}")
+    
+    return all_histories, all_true_futures, all_pred_futures, all_start_indices
+
+
+def create_covid_trend_visualization(histories, true_futures, pred_futures, start_indices, config, 
+                                   save_path='./covid_trend_comparison.png'):
+    """Create COVID-19 trend visualization similar to the reference PDF"""
+    
+    print("Creating COVID-19 trend visualization...")
+    
+    # Create figure with multiple subplots
+    fig = plt.figure(figsize=(16, 12))
+    
+    # Calculate date ranges (assuming start date is 2020-04-01 based on filename)
+    base_date = datetime(2020, 4, 1)
+    
+    # 1. Main trend plot - average across all prefectures and samples
+    ax1 = plt.subplot(3, 1, 1)
+    
+    # Aggregate all samples to create a continuous-like view
+    all_dates = []
+    all_true_values = []
+    all_pred_values = []
+    
+    for i, (hist, true_fut, pred_fut, start_idx) in enumerate(zip(histories, true_futures, pred_futures, start_indices)):
+        if i >= 20:  # Limit for clarity
+            break
+            
+        # Average across prefectures (spatial dimension)
+        hist_avg = np.mean(hist[:, :, 0])  # (T_h,) -> scalar
+        true_avg = np.mean(true_fut, axis=(1, 2))  # (T_p,)
+        pred_avg = np.mean(pred_fut, axis=(1, 2))  # (T_p,)
+        
+        # Create date sequence for this sample
+        sample_start_date = base_date + timedelta(days=start_idx - config.model.T_h)
+        hist_dates = [sample_start_date + timedelta(days=j) for j in range(config.model.T_h)]
+        future_dates = [sample_start_date + timedelta(days=config.model.T_h + j) for j in range(config.model.T_p)]
+        
+        # Store for aggregation
+        all_dates.extend(hist_dates + future_dates)
+        all_true_values.extend([hist_avg] * config.model.T_h + true_avg.tolist())
+        all_pred_values.extend([hist_avg] * config.model.T_h + pred_avg.tolist())
+    
+    # Convert to numpy for easier handling
+    unique_dates = sorted(set(all_dates))
+    
+    # Create aggregated trend
+    daily_true = {}
+    daily_pred = {}
+    for date, true_val, pred_val in zip(all_dates, all_true_values, all_pred_values):
+        if date not in daily_true:
+            daily_true[date] = []
+            daily_pred[date] = []
+        daily_true[date].append(true_val)
+        daily_pred[date].append(pred_val)
+    
+    # Average values for each date
+    trend_dates = []
+    trend_true = []
+    trend_pred = []
+    for date in unique_dates:
+        if date in daily_true:
+            trend_dates.append(date)
+            trend_true.append(np.mean(daily_true[date]))
+            trend_pred.append(np.mean(daily_pred[date]))
+    
+    # Plot main trend - separate historical and prediction periods
+    # Split data into historical and prediction parts
+    split_idx = len(trend_dates) // 2  # Approximate split
+    
+    ax1.plot(trend_dates, trend_true, 'b-', linewidth=3, label='Ground Truth', alpha=0.9)
+    ax1.plot(trend_dates, trend_pred, 'r--', linewidth=3, label='Model Prediction', alpha=0.9)
+    
+    # Add confidence bands
+    ax1.fill_between(trend_dates, trend_true, alpha=0.15, color='blue', label='True values area')
+    ax1.fill_between(trend_dates, trend_pred, alpha=0.15, color='red', label='Predicted values area')
+    
+    ax1.set_title(f'{config.data.name} Cases Trend: Ground Truth vs Prediction', 
+                  fontsize=14, fontweight='bold', pad=15)
+    ax1.set_ylabel('Average Daily Cases', fontsize=12, fontweight='bold')
+    ax1.legend(fontsize=11)
+    ax1.grid(True, alpha=0.3)
+    
+    # Format x-axis
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax1.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+    
+    # 2. Individual sample predictions
+    ax2 = plt.subplot(3, 1, 2)
+    
+    # Show a few individual prediction sequences
+    colors = ['blue', 'red', 'green', 'orange', 'purple']
+    for i in range(min(5, len(histories))):
+        hist, true_fut, pred_fut, start_idx = histories[i], true_futures[i], pred_futures[i], start_indices[i]
+        
+        # Average across prefectures
+        hist_avg = np.mean(hist, axis=(1, 2))  # (T_h,)
+        true_avg = np.mean(true_fut, axis=(1, 2))  # (T_p,)
+        pred_avg = np.mean(pred_fut, axis=(1, 2))  # (T_p,)
+        
+        # Create time sequence
+        time_steps = np.arange(-config.model.T_h, config.model.T_p)
+        complete_true = np.concatenate([hist_avg, true_avg])
+        complete_pred = np.concatenate([hist_avg, pred_avg])
+        
+        if i == 0:
+            ax2.plot(time_steps, complete_true, color=colors[i], linewidth=2, 
+                    label='Ground Truth', alpha=0.8)
+            ax2.plot(time_steps[:config.model.T_h], hist_avg, color='gray', 
+                    linewidth=2, label='Historical', alpha=0.8)
+            ax2.plot(time_steps[config.model.T_h:], pred_avg, color=colors[i], 
+                    linewidth=2, linestyle='--', label='Predicted', alpha=0.8)
+        else:
+            ax2.plot(time_steps, complete_true, color=colors[i], linewidth=1, alpha=0.6)
+            ax2.plot(time_steps[config.model.T_h:], pred_avg, color=colors[i], 
+                    linewidth=1, linestyle='--', alpha=0.6)
+    
+    ax2.axvline(x=0, color='black', linestyle=':', alpha=0.7, label='Prediction Start')
+    ax2.set_title('Individual Prediction Sequences', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Time Steps (Days)', fontsize=11)
+    ax2.set_ylabel('Average Daily Cases', fontsize=11)
+    ax2.legend(fontsize=10)
+    ax2.grid(True, alpha=0.3)
+    
+    # 3. Error analysis
+    ax3 = plt.subplot(3, 1, 3)
+    
+    # Calculate prediction errors for each time step
+    errors_by_timestep = []
+    for t in range(config.model.T_p):
+        timestep_errors = []
+        for true_fut, pred_fut in zip(true_futures, pred_futures):
+            true_t = np.mean(true_fut[t, :, 0])  # Average across prefectures for time t
+            pred_t = np.mean(pred_fut[t, :, 0])
+            timestep_errors.append(abs(true_t - pred_t))
+        errors_by_timestep.append(np.mean(timestep_errors))
+    
+    prediction_days = list(range(1, config.model.T_p + 1))
+    ax3.bar(prediction_days, errors_by_timestep, alpha=0.7, color='coral')
+    ax3.set_title('Prediction Error by Forecast Day', fontsize=12, fontweight='bold')
+    ax3.set_xlabel('Forecast Day', fontsize=11)
+    ax3.set_ylabel('Mean Absolute Error', fontsize=11)
+    ax3.grid(True, alpha=0.3)
+    
+    # Calculate comprehensive metrics
+    all_true_values = []
+    all_pred_values = []
+    
+    for true_fut, pred_fut in zip(true_futures, pred_futures):
+        # Flatten spatial and temporal dimensions for each sample
+        true_flat = true_fut.flatten()  # (T_p * V * D,)
+        pred_flat = pred_fut.flatten()  # (T_p * V * D,)
+        all_true_values.extend(true_flat)
+        all_pred_values.extend(pred_flat)
+    
+    all_true_values = np.array(all_true_values)
+    all_pred_values = np.array(all_pred_values)
+    
+    # Calculate MAE and RMSE
+    mae = np.mean(np.abs(all_true_values - all_pred_values))
+    rmse = np.sqrt(np.mean((all_true_values - all_pred_values) ** 2))
+    
+    # Calculate MAPE (avoiding division by zero)
+    non_zero_mask = all_true_values != 0
+    mape = np.mean(np.abs((all_true_values[non_zero_mask] - all_pred_values[non_zero_mask]) / all_true_values[non_zero_mask]) * 100) if np.any(non_zero_mask) else 0
+    
+    # Calculate correlation
+    correlation = np.corrcoef(all_true_values, all_pred_values)[0, 1]
+    
+    stats_text = f'Prediction Metrics:\n'
+    stats_text += f'MAE: {mae:.3f} cases\n'
+    stats_text += f'RMSE: {rmse:.3f} cases\n'
+    stats_text += f'Correlation: {correlation:.3f}\n'
+    stats_text += f'Samples: {len(true_futures)} windows\n'
+    stats_text += f'Horizon: {config.model.T_p} days'
+    
+    ax3.text(0.02, 0.98, stats_text, transform=ax3.transAxes, 
+             verticalalignment='top', fontsize=10,
+             bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
+    
+    # Print detailed metrics to console
+    print(f"PREDICTION METRICS:")
+    print(f"   MAE (Mean Absolute Error): {mae:.4f} cases")
+    print(f"   RMSE (Root Mean Square Error): {rmse:.4f} cases")
+    print(f"   Correlation Coefficient: {correlation:.4f}")
+    print(f"   Total predictions evaluated: {len(all_true_values):,} values")
+    print(f"   Prediction windows: {len(true_futures)}")
+    print(f"   Prefectures per window: {config.model.V}")
+    print(f"   Days per window: {config.model.T_p}")
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(save_path.replace('.png', '.pdf'), bbox_inches='tight', facecolor='white')
+    
+    print(f"Trend comparison saved to: {save_path}")
+    print(f"PDF version saved to: {save_path.replace('.png', '.pdf')}")
+    
+    return fig, mae, rmse, mape, correlation
+
+
+def run_evaluation_and_visualization(model, test_loader, config, clean_data, model_path):
+    """Run complete evaluation and visualization after training using ALL test data"""
+    
+    print("\n" + "="*80)
+    print(f"STARTING POST-TRAINING EVALUATION AND VISUALIZATION")
+    print(f"USING ALL {len(test_loader.dataset)} TEST SAMPLES")
+    print("="*80)
+    
+    # Set model to evaluation mode and use optimal sampling strategy
+    model.eval()
+    model.set_ddim_sample_steps(40)
+    model.set_sample_strategy('ddim_multi')
+    
+    print(f"Model path: {model_path}")
+    print(f"Configuration for dataset: {config.data.name}")
+    print(f"Test dataset size: {len(test_loader.dataset)} samples")
+    print(f"Will evaluate EVERY single test sample (no subsampling)")
+
+    # Get complete time series data - evaluate ALL test samples
+    print(f"\n Getting time series data for COMPLETE test set evaluation...")
+    histories, true_futures, pred_futures, start_indices = get_complete_time_series(
+        model, test_loader, config, clean_data
+    )
+    
+    expected_samples = len(test_loader.dataset)
+    actual_samples = len(histories)
+    print(f"Collected {actual_samples}/{expected_samples} samples for evaluation")
+    
+    if actual_samples != expected_samples:
+        print(f"Warning: Expected {expected_samples} samples but got {actual_samples}")
+    else:
+        print(f"Perfect! Using ALL test data for visualization")
+    
+    # Create trend visualization
+    print("\n Creating trend visualization...")
+    fig, mae, rmse, mape, correlation = create_covid_trend_visualization(
+        histories, true_futures, pred_futures, start_indices, config,
+        save_path=f'./{config.data.name}_trend_comparison.png'
+    )
+    
+    plt.close(fig)
+    
+    # Save detailed metrics to file
+    metrics_data = {
+        'MAE': float(mae),
+        'RMSE': float(rmse), 
+        'Correlation': float(correlation),
+        'Samples': len(histories),
+        'Expected_Samples': expected_samples,
+        'Coverage': len(histories) / expected_samples * 100,
+        'Prediction_Horizon': config.model.T_p,
+        'Vertices': config.model.V,
+        'Dataset': config.data.name,
+        'Model_Path': model_path
+    }
+    
+    metrics_file = f'./{config.data.name}_prediction_metrics.json'
+    with open(metrics_file, 'w') as f:
+        json.dump(metrics_data, f, indent=2)
+    
+    print("\n" + "="*60)
+    print("EVALUATION AND VISUALIZATION COMPLETED!")
+    print("Generated files:")
+    print(f"  - {config.data.name}_trend_comparison.png/pdf")
+    print(f"  - {metrics_file}")
+    print(f"\n DETAILED VISUALIZATION METRICS (ALL {len(histories)} SAMPLES):")
+    print(f"   MAE:  {mae:.4f} cases")
+    print(f"   RMSE: {rmse:.4f} cases")
+    print(f"   Correlation: {correlation:.4f}")
+    print(f"   Coverage: {len(histories)}/{expected_samples} ({len(histories)/expected_samples*100:.1f}%)")
+    print("="*60)
+    
+    return mae, rmse, mape, correlation
 
 
 # for tensorboard
@@ -42,7 +418,7 @@ def get_params():
     parser = argparse.ArgumentParser(description='Entry point of the code')
 
     # model
-    parser.add_argument("--epsilon_theta", type=str, default='STGTransformer') # UGnet, STGTransformer
+    parser.add_argument("--epsilon_theta", type=str, default='UGnet') # UGnet, STGTransformer
     parser.add_argument("--hidden_size", type=int, default=32)
     parser.add_argument("--N", type=int, default=200)
     parser.add_argument("--beta_schedule", type=str, default='quad')  # uniform, quad
@@ -50,74 +426,62 @@ def get_params():
     parser.add_argument("--sample_steps", type=int, default=200)  # sample_steps
     parser.add_argument("--ss", type=str, default='ddpm') #help='sample strategy', ddpm, multi_diffusion, one_diffusion
     parser.add_argument("--T_h", type=int, default=14)
-    parser.add_argument("--T_p", type=int, default=7)
+    parser.add_argument("--T_p", type=int, default=14)
 
     # eval
     parser.add_argument('--n_samples', type=int, default=8)
 
     # train
     parser.add_argument("--is_train", type=bool, default=True) # train or evaluate
-    parser.add_argument("--data", type=str, default='COVID')
+    parser.add_argument("--data", type=str, default='COVID-JP')
     parser.add_argument("--mask_ratio", type=float, default=0.0) # mask of history data
     parser.add_argument("--is_test", type=bool, default=False)
     parser.add_argument("--nni", type=bool, default=False)
     parser.add_argument("--lr", type=float, default=0.002)
     parser.add_argument("--batch_size", type=int, default=8)
+    
+    # visualization
+    parser.add_argument("--enable_visualization", type=bool, default=True) # enable post-training visualization
+    parser.add_argument("--vis_samples", type=int, default=None) # number of samples for visualization (None = all)
+    
+    # inference mode
+    parser.add_argument("--inference_only", type=bool, default=False) # inference mode only
+    parser.add_argument("--model_path", type=str, default=None) # path to pretrained model for inference
 
     args, _ = parser.parse_known_args()
     return args
 
-def default_config(data='COVID'):
+def default_config(data='COVID-US'):
     config = edict()
     config.PATH_MOD = ws + '/output/model/'
     config.PATH_LOG = ws + '/output/log/'
     config.PATH_FORECAST = ws + '/output/forecast/'
 
-    # === 数据基本信息 === #
     config.data = edict()
     config.data.name = data
     config.data.path = ws + '/data/dataset/'
-    config.data.feature_file = f"{config.data.path}{config.data.name}/flow.npy"
+    config.data.feature_file = f"{config.data.path}{config.data.name}/cases.npy"
     config.data.spatial = f"{config.data.path}{config.data.name}/adj.npy"
-    config.data.num_recent = 1  # 暂时保留
+    config.data.num_recent = 1
 
-    # === 针对不同数据集设定参数 === #
-    if config.data.name == 'COVID':
+    if config.data.name == 'COVID-US':
         config.data.num_features = 1
         config.data.num_vertices = 52
-        config.data.points_per_hour = 1       # 每天一个数据点
-        config.data.freq = 'daily'            # 日频
+        config.data.points_per_hour = 1
+        config.data.freq = 'daily' 
         config.data.val_start_idx = int(366 * 0.6)
         config.data.test_start_idx = int(366 * 0.8)
 
-    elif config.data.name == 'PEMS08':
+    elif config.data.name == 'COVID-JP':
         config.data.num_features = 1
-        config.data.num_vertices = 170
-        config.data.points_per_hour = 12      # 每小时12个点（每5分钟一个）
-        config.data.freq = '5min'             # 高频
-        config.data.val_start_idx = int(17856 * 0.6)
-        config.data.test_start_idx = int(17856 * 0.8)
-
-    elif config.data.name == "AIR_BJ":
-        config.data.num_features = 1
-        config.data.num_vertices = 34
-        config.data.points_per_hour = 1       # 每小时1个点（小时级）
-        config.data.freq = 'hourly'
-        config.data.val_start_idx = int(8760 * 0.6)
-        config.data.test_start_idx = int(8760 * 0.8)
-
-    elif config.data.name == 'AIR_GZ':
-        config.data.num_features = 1
-        config.data.num_vertices = 41
-        config.data.points_per_hour = 1
-        config.data.freq = 'hourly'
-        config.data.val_start_idx = int(8760 * 10 / 12)
-        config.data.test_start_idx = int(8160 * 11 / 12)
-
+        config.data.num_vertices = 47
+        config.data.points_per_hour = 1    
+        config.data.freq = 'daily'
+        config.data.val_start_idx = int(539 * 0.6)
+        config.data.test_start_idx = int(539 * 0.8)
     else:
         raise ValueError(f"Unknown dataset: {config.data.name}")
 
-    # === GPU 分配 === #
     gpu_id = GPU().get_usefuel_gpu(max_memory=6000, condidate_gpu_id=[0,1,2,3])
     config.gpu_id = gpu_id
     if gpu_id is not None:
@@ -125,15 +489,15 @@ def default_config(data='COVID'):
         torch.cuda.set_device(f"cuda:{cuda_id}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # === 模型结构配置 === #
     config.model = edict()
-    config.model.T_p = 7  # 预测窗口
-    config.model.T_h = 14  # 历史窗口
+    # Note: T_p and T_h will be set later from command line arguments
+    # Default values are defined in get_params() function
+    config.model.T_p = 14  # This will be overridden by params['T_p']
+    config.model.T_h = 14  # This will be overridden by params['T_h']
     config.model.V = config.data.num_vertices
     config.model.F = config.data.num_features
     config.model.week_len = 7
 
-    # ✅ 根据数据频率合理设置 day_len
     if config.data.freq == 'daily':
         config.model.day_len = 1
     elif config.data.freq == 'weekly':
@@ -144,7 +508,6 @@ def default_config(data='COVID'):
     config.model.device = device
     config.model.d_h = 32
 
-    # === Diffusion 参数 === #
     config.model.N = 200
     config.model.sample_steps = 200
     config.model.epsilon_theta = 'UGnet'
@@ -155,17 +518,14 @@ def default_config(data='COVID'):
 
     config.n_samples = 2
 
-    # === UGnet-specific === #
     config.model.channel_multipliers = [1, 2]
     config.model.supports_len = 2
 
-    # === STGTransformer-specific === #
     config.model.n_head = 4
     config.model.n_layers = 4
     config.model.dropout = 0.2
 
 
-    # === 训练参数 === #
     config.model_name = 'DiffSTG'
     config.is_test = False
     config.epoch = 300
@@ -178,7 +538,6 @@ def default_config(data='COVID'):
     config.device = device
     config.logger = Logger()
 
-    # === 创建输出路径 === #
     os.makedirs(config.PATH_MOD, exist_ok=True)
     os.makedirs(config.PATH_LOG, exist_ok=True)
     os.makedirs(config.PATH_FORECAST, exist_ok=True)
@@ -186,7 +545,8 @@ def default_config(data='COVID'):
     return config
 
 def evals(model, data_loader, epoch, metric, config, clean_data, mode='Test'):
-    setup_seed(2025)
+    # setup_seed(2025)
+    setup_seed(1)
 
     y_pred, y_true, time_lst = [], [], []
     metrics_future = Metric(T_p=config.model.T_p)
@@ -279,9 +639,111 @@ def evals(model, data_loader, epoch, metric, config, clean_data, mode='Test'):
 
 
 from pprint import  pprint
+
+def run_inference_only(params: dict):
+    """Run inference only mode - load pretrained model and generate visualization"""
+    
+    print("\n" + "="*80)
+    print("INFERENCE ONLY MODE")
+    print("="*80)
+    
+    # Check if model path is provided
+    if not params.get('model_path') or not os.path.exists(params['model_path']):
+        raise ValueError(f"Model path not provided or doesn't exist: {params.get('model_path')}")
+    
+    torch.manual_seed(2022)
+    torch.set_num_threads(2)
+    config = default_config(params['data'])
+    
+    # Set configuration from parameters
+    config.is_test = False  # We want full evaluation, not test mode
+    config.nni = False
+    config.batch_size = params['batch_size']
+    config.enable_visualization = True  # Always enable visualization in inference mode
+    config.vis_samples = params['vis_samples']
+    
+    # Model configuration
+    config.model.N = params['N']
+    config.T_h = config.model.T_h = params['T_h']
+    config.T_p = config.model.T_p = params['T_p']
+    config.model.epsilon_theta = params['epsilon_theta']
+    config.model.sample_steps = params['sample_steps']
+    config.model.d_h = params['hidden_size']
+    config.model.C = params['hidden_size']
+    config.model.n_channels = params['hidden_size']
+    config.model.beta_end = params['beta_end']
+    config.model.beta_schedule = params["beta_schedule"]
+    config.model.sample_strategy = params["ss"]
+    config.n_samples = params['n_samples']
+    
+    config.trial_name = f"inference_{params['data']}_{os.path.basename(params['model_path']).replace('.pth', '')}"
+    config.log_path = f"{config.PATH_LOG}/{config.trial_name}.log"
+    
+    print(f"Configuration for inference:")
+    print(f"  Dataset: {params['data']}")
+    print(f"  Model path: {params['model_path']}")
+    print(f"  Prediction horizon: {config.model.T_p} days")
+    print(f"  History length: {config.model.T_h} days")
+    print(f"  Device: {config.device}")
+    
+    # Data preprocessing
+    print(f"\n1. Data preprocessing...")
+    clean_data = CleanDataset(config)
+    config.model.A = clean_data.adj
+    
+    # Load pretrained model
+    print(f"\n2. Loading pretrained model...")
+    try:
+        model = torch.load(params['model_path'], map_location=config.device, weights_only=False)
+        model = model.to(config.device)
+        print(f"✅ Model loaded successfully from: {params['model_path']}")
+    except Exception as e:
+        raise ValueError(f"Failed to load model from {params['model_path']}: {e}")
+    
+    # Create test dataset
+    print(f"\n3. Creating test dataset...")
+    test_dataset = EpiDataset(clean_data, (config.data.test_start_idx + config.model.T_p, -1), config)
+    test_loader = torch.utils.data.DataLoader(test_dataset, 8, shuffle=False)
+    print(f"   Test dataset size: {len(test_dataset)} samples")
+    
+    # Set model to optimal inference configuration
+    model.eval()
+    model.set_ddim_sample_steps(40)
+    model.set_sample_strategy('ddim_multi')
+    
+    # Run evaluation and visualization
+    print(f"\n4. Running inference and visualization...")
+    try:
+        visual_mae, visual_rmse, visual_mape, visual_corr = run_evaluation_and_visualization(
+            model, test_loader, config, clean_data, params['model_path']
+        )
+        
+        print(f"\n" + "="*60)
+        print("INFERENCE COMPLETED SUCCESSFULLY!")
+        print(f"  MAE:  {visual_mae:.4f} cases")
+        print(f"  RMSE: {visual_rmse:.4f} cases") 
+        print(f"  Correlation: {visual_corr:.4f}")
+        print(f"Generated files:")
+        print(f"  - {config.data.name}_trend_comparison.png/pdf")
+        print(f"  - {config.data.name}_prediction_metrics.json")
+        print("="*60)
+        
+        return visual_mae, visual_rmse, visual_mape, visual_corr
+        
+    except Exception as e:
+        print(f"❌ Inference failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
 def main(params: dict):
-    # torch.manual_seed(2022)
-    setup_seed(2025)
+    # Check if inference only mode is requested
+    if params.get('inference_only', False):
+        return run_inference_only(params)
+    
+    torch.manual_seed(2022)
+    # setup_seed(2025)
     torch.set_num_threads(2)
     config = default_config(params['data'])
 
@@ -290,6 +752,8 @@ def main(params: dict):
     config.lr = params['lr']
     config.batch_size = params['batch_size']
     config.mask_ratio = params['mask_ratio']
+    config.enable_visualization = params['enable_visualization']
+    config.vis_samples = params['vis_samples']
 
     # model
     config.model.N = params['N']
@@ -330,14 +794,14 @@ def main(params: dict):
     model = model.to(config.device)
 
     # Load training dataset
-    train_dataset = TrafficDataset(clean_data, (0 + config.model.T_p, config.data.val_start_idx - config.model.T_p + 1), config)
+    train_dataset = EpiDataset(clean_data, (0 + config.model.T_p, config.data.val_start_idx - config.model.T_p + 1), config)
     train_loader = torch.utils.data.DataLoader(train_dataset, config.batch_size, shuffle=True, pin_memory=True)
 
-    val_dataset = TrafficDataset(clean_data, (config.data.val_start_idx + config.model.T_p, config.data.test_start_idx - config.model.T_p + 1), config)
-    # val_dataset   = TrafficDataset(clean_data, (config.data.val_start_idx + config.model.T_p, config.data.val_start_idx + config.model.T_p + 512), config)
+    val_dataset = EpiDataset(clean_data, (config.data.val_start_idx + config.model.T_p, config.data.test_start_idx - config.model.T_p + 1), config)
+    # val_dataset   = EpiDataset(clean_data, (config.data.val_start_idx + config.model.T_p, config.data.val_start_idx + config.model.T_p + 512), config)
     val_loader = torch.utils.data.DataLoader(val_dataset, 8, shuffle=False) #****
 
-    test_dataset = TrafficDataset(clean_data, (config.data.test_start_idx + config.model.T_p, -1), config)
+    test_dataset = EpiDataset(clean_data, (config.data.test_start_idx + config.model.T_p, -1), config)
     test_loader = torch.utils.data.DataLoader(test_dataset, 8, shuffle=False) #****
 
 
@@ -376,7 +840,7 @@ def main(params: dict):
     train_start_t = timer()
     # Train and sample the data
     for epoch in range(config.epoch):
-        if not params['is_train']: break
+        if not params.get('is_train', True): break  # Safe dictionary access with default
         # if epoch > 1 and config.is_test: break
 
         n, avg_loss, time_lst = 0, 0, []
@@ -480,105 +944,36 @@ def main(params: dict):
     # === DiffSTG result ===
     mae_diffstg = metrics_test.metrics['mae'] / config.model.T_p
     rmse_diffstg = metrics_test.metrics['rmse'] / config.model.T_p
-    mape_diffstg = metrics_test.metrics['mape'] / config.model.T_p
 
-    # === AR baseline ===
-    raw_test = clean_data.label[config.data.test_start_idx:, :, 0]
-    pred_ar, true_ar = ar(raw_test, T_h=config.model.T_h, T_p=config.model.T_p)  # shape (B, T_p, V)
 
-    # Reverse normalization and clip extreme values to avoid overflow
-    pred_ar = clean_data.reverse_normalization(pred_ar)
-    true_ar = clean_data.reverse_normalization(true_ar)
-    pred_ar = np.clip(pred_ar, 0, 1e6)
-    true_ar = np.clip(true_ar, 0, 1e6)
 
-    mae_ar = np.mean(np.abs(pred_ar - true_ar)) / config.model.T_p
-    rmse_ar = np.sqrt(np.mean((pred_ar - true_ar)**2)) / config.model.T_p
-    mape_ar = np.mean(np.abs((pred_ar - true_ar) / (true_ar + 1e-6))) * 100 / config.model.T_p
-
-    # # === STGCN baseline ===
-    # pred_stgcn, true_stgcn = stgcn_forecast(clean_data, T_h=config.model.T_h, T_p=config.model.T_p)
-    # pred_stgcn = clean_data.reverse_normalization(pred_stgcn)
-    # true_stgcn = clean_data.reverse_normalization(true_stgcn)
-    # mae_stgcn = np.mean(np.abs(pred_stgcn - true_stgcn)) / config.model.T_p
-    # rmse_stgcn = np.sqrt(np.mean((pred_stgcn - true_stgcn) ** 2)) / config.model.T_p
-    # mape_stgcn = np.mean(np.abs((pred_stgcn - true_stgcn) / (true_stgcn + 1e-6))) * 100 / config.model.T_p
-
-    # # === CNNRNN_Res baseline ===
-    # pred_cnnrnn, true_cnnrnn = cnnrnn_forecast(clean_data, adj_matrix=clean_data.adj, T_h=config.model.T_h, T_p=config.model.T_p)
-    # pred_cnnrnn = clean_data.reverse_normalization(pred_cnnrnn)
-    # true_cnnrnn = clean_data.reverse_normalization(true_cnnrnn)
-    # mae_cnnrnn = np.mean(np.abs(pred_cnnrnn - true_cnnrnn)) / config.model.T_p
-    # rmse_cnnrnn = np.sqrt(np.mean((pred_cnnrnn - true_cnnrnn) ** 2)) / config.model.T_p
-    # mape_cnnrnn = np.mean(np.abs((pred_cnnrnn - true_cnnrnn) / (true_cnnrnn + 1e-6))) * 100 / config.model.T_p
-
-    # # === ColaGNN baseline ===
-    # pred_colagnn, true_colagnn = colagnn_forecast(clean_data, adj_matrix=clean_data.adj, T_h=config.model.T_h, T_p=config.model.T_p)
-    # pred_colagnn = clean_data.reverse_normalization(pred_colagnn)
-    # true_colagnn = clean_data.reverse_normalization(true_colagnn)
-    # mae_colagnn = np.mean(np.abs(pred_colagnn - true_colagnn)) / config.model.T_p
-    # rmse_colagnn = np.sqrt(np.mean((pred_colagnn - true_colagnn) ** 2)) / config.model.T_p
-    # mape_colagnn = np.mean(np.abs((pred_colagnn - true_colagnn) / (true_colagnn + 1e-6))) * 100 / config.model.T_p
-
-    # # === STAN baseline ===
-    # pred_stan, true_stan = stan_forecast(clean_data, adj_matrix=clean_data.adj, T_h=config.model.T_h, T_p=config.model.T_p)
-    # pred_stan = clean_data.reverse_normalization(pred_stan)
-    # true_stan = clean_data.reverse_normalization(true_stan)
-    # mae_stan = np.mean(np.abs(pred_stan - true_stan)) / config.model.T_p
-    # rmse_stan = np.sqrt(np.mean((pred_stan - true_stan) ** 2)) / config.model.T_p
-    # mape_stan = np.mean(np.abs((pred_stan - true_stan) / (true_stan + 1e-6))) * 100 / config.model.T_p
-
-    # === EpiColaGNN baseline ===
-    # pred_epicolagnn, true_epicolagnn = epicolagnn_forecast(clean_data, adj_matrix=clean_data.adj, T_h=config.model.T_h, T_p=config.model.T_p)
-    # pred_epicolagnn = clean_data.reverse_normalization(pred_epicolagnn)
-    # true_epicolagnn = clean_data.reverse_normalization(true_epicolagnn)
-    # mae_epicolagnn = np.mean(np.abs(pred_epicolagnn - true_epicolagnn)) / config.model.T_p
-    # rmse_epicolagnn = np.sqrt(np.mean((pred_epicolagnn - true_epicolagnn) ** 2)) / config.model.T_p
-    # mape_epicolagnn = np.mean(np.abs((pred_epicolagnn - true_epicolagnn) / (true_epicolagnn + 1e-6))) * 100 / config.model.T_p
-
-    # # === STGODE baseline ===
-    # pred_stgode, true_stgode = stgode_forecast(clean_data, adj_matrix=clean_data.adj, T_h=config.model.T_h, T_p=config.model.T_p)
-    # pred_stgode = clean_data.reverse_normalization(pred_stgode)
-    # true_stgode = clean_data.reverse_normalization(true_stgode)
-    # mae_stgode = np.mean(np.abs(pred_stgode - true_stgode)) / config.model.T_p
-    # rmse_stgode = np.sqrt(np.mean((pred_stgode - true_stgode) ** 2)) / config.model.T_p
-    # mape_stgode = np.mean(np.abs((pred_stgode - true_stgode) / (true_stgode + 1e-6))) * 100 / config.model.T_p
-
-    # === Print all results in aligned format ===
-    all_results = {
-        'AR': {'mae': mae_ar, 'rmse': rmse_ar, 'mape': mape_ar},
-        'DiffSTG': {'mae': mae_diffstg, 'rmse': rmse_diffstg, 'mape': mape_diffstg},
-        # 'STGCN': {'mae': mae_stgcn, 'rmse': rmse_stgcn, 'mape': mape_stgcn},
-        # 'CNNRNN_Res': {'mae': mae_cnnrnn, 'rmse': rmse_cnnrnn, 'mape': mape_cnnrnn},
-        # 'ColaGNN': {'mae': mae_colagnn, 'rmse': rmse_colagnn, 'mape': mape_colagnn},
-        # 'EpiColaGNN': {'mae': mae_epicolagnn, 'rmse': rmse_epicolagnn, 'mape': mape_epicolagnn},
-        # 'STGODE': {'mae': mae_stgode, 'rmse': rmse_stgode, 'mape': mape_stgode},
-        # 'STAN': {'mae': mae_stan, 'rmse': rmse_stan, 'mape': mape_stan},
-    }
-    print("\n\n========== Evaluation Results (MAE | RMSE | MAPE) ==========")
-    for method in all_results:
-        mae = all_results[method]['mae']
-        rmse = all_results[method]['rmse']
-        mape = all_results[method]['mape']
-        print(f"{method:15s} | MAE: {mae:<8.4f} | RMSE: {rmse:<8.4f} | MAPE: {mape:<8.2f}")
-    print("============================================================\n")
-
-    # === Save to CSV ===
-    import pandas as pd
-    csv_path = './results.csv'
-    results = [
-        ['AR', mae_ar, rmse_ar, mape_ar],
-        ['DiffSTG', mae_diffstg, rmse_diffstg, mape_diffstg],
-        # ['STGCN', mae_stgcn, rmse_stgcn, mape_stgcn],
-        # ['CNNRNN_Res', mae_cnnrnn, rmse_cnnrnn, mape_cnnrnn],
-        # ['ColaGNN', mae_colagnn, rmse_colagnn, mape_colagnn],
-        # ['EpiColaGNN', mae_epicolagnn, rmse_epicolagnn, mape_epicolagnn],
-        # ['STGODE', mae_stgode, rmse_stgode, mape_stgode],
-        # ['STAN', mae_stan, rmse_stan, mape_stan],
-    ]
-    df_result = pd.DataFrame(results, columns=['Model', 'MAE', 'RMSE', 'MAPE'])
-    df_result.to_csv(csv_path, index=False)
-    print(f"[Output] Results written to {csv_path}")
+    # === Run post-training evaluation and visualization ===
+    # Only run visualization after COMPLETE training (not just testing) and if enabled
+    is_train = params.get('is_train', True)  # Safe dictionary access with default
+    if is_train and config.enable_visualization and not config.is_test:
+        print("\n Starting post-training evaluation and visualization...")
+        print("   (This only runs ONCE after complete training using ALL test data)")
+        try:
+            visual_mae, visual_rmse, visual_mape, visual_corr = run_evaluation_and_visualization(
+                model, test_loader, config, clean_data, config.model_path
+            )
+            
+            # Update results with visualization metrics
+            print(f"\n VISUALIZATION METRICS vs TRAINING METRICS:")
+            print(f"   Training  MAE: {mae_diffstg:.4f} | Visualization MAE: {visual_mae:.4f}")
+            print(f"   Training RMSE: {rmse_diffstg:.4f} | Visualization RMSE: {visual_rmse:.4f}")
+            print(f"   Visualization Correlation: {visual_corr:.4f}")
+            
+        except Exception as e:
+            print(f" Visualization failed: {e}")
+            import traceback
+            traceback.print_exc()
+    elif is_train and not config.enable_visualization:
+        print("\n Visualization disabled (use --enable_visualization True to enable)")
+    elif not is_train:
+        print("\n Skipping visualization (evaluation mode only)")
+    elif config.is_test:
+        print("\n Skipping visualization (test mode)")
 
 
 

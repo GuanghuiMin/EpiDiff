@@ -51,22 +51,13 @@ class CleanDataset():
             self.range_mask = self.interaction_range_mask(hops=self.alpha, t_size=self.t_size)
 
     def read_data(self):
-        if 'PEMS' in self.data_name:
-            data = np.expand_dims(np.load(self.feature_file)[:, :, 0], -1)
-        elif 'AIR' in self.data_name:
-            data = np.expand_dims(np.load(self.feature_file)[:, :, 0], -1)
-            data = np.nan_to_num(data, nan=0)
-        elif 'Metro' in self.data_name:
-            data = np.expand_dims(np.load(self.feature_file)[:, :, 0], -1)
-            data = np.nan_to_num(data, nan=0)
-        elif 'COVID' in self.data_name:
+        if 'COVID' in self.data_name:
             data = np.expand_dims(np.load(self.feature_file)[:, :, 0], -1)
             data = np.nan_to_num(data, nan=0)
         else:
             data = np.load(self.feature_file)
         # return data.astype('float32'), self.normalization(data).astype('float32')
         return self.normalization(data).astype('float32'), self.normalization(data).astype('float32')
-
 
     def normalization(self, feature):
         train = feature[:self.val_start_idx]
@@ -94,7 +85,7 @@ class CleanDataset():
 
 
 
-class TrafficDataset(Dataset):
+class EpiDataset(Dataset):
     def __init__(self, clean_data, data_range, config):
         self.T_h = config.model.T_h
         self.T_p = config.model.T_p

@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+__pycache__
 *.py[cod]
 *$py.class
 
@@ -71,9 +72,9 @@ dmypy.json
 output/
 
 # Local data files
-data/
-*.npy
-*.npz
+# data/
+# *.npy
+# *.npz
 *.pkl
 *.h5
 *.pt

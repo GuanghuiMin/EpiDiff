@@ -2,7 +2,6 @@ import os
 import numpy as np
 from tqdm import tqdm
 
-# Use your fixed-consistency implementation from ut_laplace.py
 from steering.ut_laplace import forecast_point_and_uncertainty
 
 def run_all_windows(
@@ -160,7 +159,7 @@ if __name__ == "__main__":
     Data_name = "COVID-US"
     T_h = 14
     T_p = 14
-    test_start_id = int(539 * 0.6)
+    test_start_id = int(539 * 0.8)
     OUT_PATH = f"./uncert_out/{Data_name}_uncert_th{T_h}_tp{T_p}.npz"
 
     # Keep defaults unless you have a reason to change

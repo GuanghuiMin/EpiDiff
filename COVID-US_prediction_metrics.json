@@ -1,0 +1,12 @@
+{
+  "MAE": 427.3788146972656,
+  "RMSE": 1278.2799072265625,
+  "Correlation": 0.7605412445750844,
+  "Samples": 47,
+  "Expected_Samples": 47,
+  "Coverage": 100.0,
+  "Prediction_Horizon": 14,
+  "Vertices": 52,
+  "Dataset": "COVID-US",
+  "Model_Path": "/home/guanghui/DiffODE/output/model/1+UGnet+32+200+quad+0.1+200+ddpm+14+14+8+True+COVID-US+0.0+False+False+0.002+8+True+None+False+NoneN-200+T_h-14+T_p-14+epsilon_theta-UGnet.dm4stg"
+}

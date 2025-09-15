@@ -377,7 +377,7 @@ if __name__ == "__main__":
     print("SIR data shape:", sir.shape)
 
     T, V, _ = sir.shape
-    v = 30  # choose a node to test
+    v = 20  # choose a node to test
 
     S = sir[:, :, 0]    # (T, V)
     I = sir[:, :, 1]
@@ -386,7 +386,7 @@ if __name__ == "__main__":
     # Define windows (example indices; choose from your TEST split)
     T_h = 14
     T_p = 7
-    label_start = 450
+    label_start = 363
     hist_start = label_start - T_h
     hist_end   = label_start              # exclusive
     fut_start  = label_start
@@ -419,6 +419,7 @@ if __name__ == "__main__":
 
     # Pretty compare
     h = len(y_future)
+    print(y_hist)
     print("\nStep |  True(y)  |  y_hat  |  Uncertainty ")
     print("-----+-----------+-------------------+------------------------------")
     for t in range(h):

@@ -123,31 +123,95 @@ class DiffSTG(nn.Module):
     def set_ddim_sample_steps(self, sample_steps):
         self.sample_steps = sample_steps
 
-    def evaluate(self, input, n_samples=2):
-        x_masked, _, _ = input
+    def set_guidance_params(self, guidance_scale=1.0, guidance_sigma=0.1):
+        """Set parameters for classifier guidance sampling"""
+        self.guidance_scale = guidance_scale
+        self.guidance_sigma = guidance_sigma
+
+    def p_sample_loop_ddim_guidance(self, c, x_target, guidance_scale=1.0, guidance_sigma=0.1):
+        """
+        DDIM sampling with classifier guidance based on target truth
+        
+        Args:
+            c: condition tuple (x_masked, pos_w, pos_d)
+            x_target: target truth for guidance, shape (B, F, V, T)
+            guidance_scale: strength of guidance 
+            guidance_sigma: noise level for guidance term
+        
+        Returns:
+            xs: list of intermediate states
+            x0_preds: list of x0 predictions
+        """
+        x_masked, _, _ = c
         B, F, V, T = x_masked.shape
+
+        N = self.N
+        timesteps = self.sample_steps
+        skip_type = self.beta_schedule
+        
+        if skip_type == "uniform":
+            skip = N // timesteps
+            seq = range(0, N, skip)
+        elif skip_type == "quad":
+            seq = (np.linspace(0, np.sqrt(N * 0.8), timesteps) ** 2)
+            seq = [int(s) for s in list(seq)]
+        else:
+            raise NotImplementedError
+
+        x = torch.randn([B, self.config.F, V, T], device=self.device)
+        xs, x0_preds = generalized_steps_guidance(
+            x, seq, self.eps_model, self.beta, c, x_target, 
+            guidance_scale=guidance_scale, guidance_sigma=guidance_sigma, 
+            T_h=self.config.T_h, eta=0
+        )
+        return xs, x0_preds
+
+    def evaluate(self, input, n_samples=2, x_target=None):
+        x_masked, pos_w, pos_d = input
+        B, F, V, T = x_masked.shape
+        
         if self.sample_strategy == 'ddim_multi':
-            x_masked = x_masked.unsqueeze(1).repeat(1, n_samples, 1, 1, 1).reshape(-1, F, V, T)#.to(self.config.device)
-            xs, x0_preds = self.p_sample_loop_ddim((x_masked, _, _))
+            x_masked = x_masked.unsqueeze(1).repeat(1, n_samples, 1, 1, 1).reshape(-1, F, V, T)
+            xs, x0_preds = self.p_sample_loop_ddim((x_masked, pos_w, pos_d))
             x = xs[-1]
             x = x.reshape(B, n_samples, F, V, T)
             return x # (B, n_samples, F, V, T)
+            
         elif self.sample_strategy == 'ddim_one':
-            xs, x0_preds = self.p_sample_loop_ddim((x_masked, _, _))
+            xs, x0_preds = self.p_sample_loop_ddim((x_masked, pos_w, pos_d))
             x= xs[-n_samples:]
             x = torch.stack(x, dim=1)
             return x
-        if self.sample_strategy == 'ddpm':
-            x_masked = x_masked.unsqueeze(1).repeat(1, n_samples, 1, 1, 1).reshape(-1, F, V, T)  # .to(self.config.device)
-            x = self.p_sample_loop((x_masked, _, _))
+            
+        elif self.sample_strategy == 'ddpm':
+            x_masked = x_masked.unsqueeze(1).repeat(1, n_samples, 1, 1, 1).reshape(-1, F, V, T)
+            x = self.p_sample_loop((x_masked, pos_w, pos_d))
             x = x.reshape(B, n_samples, F, V, T)
             return x  # (B, n_samples, F, V, T)
+            
+        elif self.sample_strategy == 'ddim_guidance':
+            if x_target is None:
+                raise ValueError("x_target must be provided for guidance sampling")
+            
+            # Get guidance parameters
+            guidance_scale = getattr(self, 'guidance_scale', 1.0)
+            guidance_sigma = getattr(self, 'guidance_sigma', 0.1)
+            
+            x_masked = x_masked.unsqueeze(1).repeat(1, n_samples, 1, 1, 1).reshape(-1, F, V, T)
+            x_target = x_target.unsqueeze(1).repeat(1, n_samples, 1, 1, 1).reshape(-1, F, V, T)
+            
+            xs, x0_preds = self.p_sample_loop_ddim_guidance(
+                (x_masked, pos_w, pos_d), x_target, guidance_scale, guidance_sigma
+            )
+            x = xs[-1]
+            x = x.reshape(B, n_samples, F, V, T)
+            return x # (B, n_samples, F, V, T)
+            
         else:
-            raise  NotImplementedError
+            raise NotImplementedError(f"Unknown sample strategy: {self.sample_strategy}")
 
-    def forward(self, input, n_samples = 1):
-
-        return self.evaluate(input, n_samples)
+    def forward(self, input, n_samples=1, x_target=None):
+        return self.evaluate(input, n_samples, x_target)
 
     def loss(self, x0: torch.Tensor, c: Tuple):
         """
@@ -202,6 +266,117 @@ def generalized_steps(x, seq, model, b, c, **kwargs):
             xs.append(xt_next.to('cpu'))
 
     return xs, x0_preds
+
+
+# DDIM sampling with classifier guidance
+def generalized_steps_guidance(x, seq, model, b, c, x_target, guidance_scale=1.0, guidance_sigma=0.1, T_h=14, **kwargs):
+    """
+    DDIM sampling with classifier guidance based on target truth
+    
+    Implementation of the guidance term from:
+    p_target(x_0|x_M) = (1/Z) * p_θ(x_0|c) * ∫ p(x_M) * exp(-1/(2σ²) * ||x-x_M||²) dx_M
+    
+    Args:
+        x: initial noise
+        seq: timestep sequence
+        model: noise prediction model
+        b: beta schedule
+        c: condition tuple
+        x_target: target truth for guidance
+        guidance_scale: strength of guidance
+        guidance_sigma: noise level for guidance term
+    """
+    with torch.no_grad():
+        n = x.size(0)
+        seq_next = [-1] + list(seq[:-1])
+        x0_preds = []
+        xs = [x]
+        
+        for i, j in zip(reversed(seq), reversed(seq_next)):
+            t = (torch.ones(n) * i).to(x.device)
+            t = t.long()
+            next_t = (torch.ones(n) * j).to(x.device)
+            at = compute_alpha(b, t.long())
+            at_next = compute_alpha(b, next_t.long())
+            xt = xs[-1].to(x.device)
+            
+            # Standard noise prediction
+            et = model(xt, t, c)
+            x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
+            
+            # Apply classifier guidance
+            if guidance_scale > 0:
+                # Compute guidance term: -∇_x log p(x_target|x)
+                # This approximates the integral in the guidance equation
+                # Use T_h to only apply guidance to future timesteps
+                guidance_term = compute_guidance_term(x0_t, x_target, guidance_sigma, T_h)
+                
+                # Apply guidance to the noise prediction
+                et = et - guidance_scale * (1 - at).sqrt() * guidance_term
+                
+                # Recompute x0_t with guided noise prediction
+                x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
+            
+            x0_preds.append(x0_t.detach().cpu())
+            
+            # DDIM update step
+            c1 = kwargs.get("eta", 0) * ((1 - at / at_next) * (1 - at_next) / (1 - at)).sqrt()
+            c2 = ((1 - at_next) - c1 ** 2).sqrt()
+            xt_next = at_next.sqrt() * x0_t + c1 * torch.randn_like(x) + c2 * et
+            xs.append(xt_next.to('cpu'))
+
+    return xs, x0_preds
+
+
+def compute_guidance_term(x0_pred, x_target, sigma, T_h=14):
+    """
+    Compute the guidance term: -∇_x log p(x_target|x)
+    
+    For Gaussian likelihood: p(x_target|x) ∝ exp(-||x - x_target||²/(2σ²))
+    The gradient is: ∇_x log p(x_target|x) = -(x - x_target)/σ²
+    So the guidance term is: -∇_x log p(x_target|x) = (x - x_target)/σ²
+    
+    IMPORTANT: We only apply guidance to the future part (last T_p timesteps),
+    not the history part (first T_h timesteps).
+    
+    Args:
+        x0_pred: predicted x0, shape (B, F, V, T)
+        x_target: target truth, shape (B, F, V, T)  
+        sigma: noise level for guidance
+        T_h: length of history (guidance will be applied to timesteps T_h:)
+    
+    Returns:
+        guidance_term: gradient for guidance, shape (B, F, V, T)
+    """
+    # Add numerical stability - clamp sigma to prevent division by very small numbers
+    sigma = max(sigma, 1e-6)
+    
+    # Initialize guidance term as zeros
+    guidance_term = torch.zeros_like(x0_pred)
+    
+    # Only compute guidance for the future part (prediction horizon)
+    # History part (first T_h timesteps) should not be guided
+    if x0_pred.shape[-1] > T_h:
+        # Compute difference only for future part
+        future_pred = x0_pred[:, :, :, T_h:]  # Shape: (B, F, V, T_p)
+        future_target = x_target[:, :, :, T_h:]  # Shape: (B, F, V, T_p)
+        
+        # For classifier guidance, we want: ∇_x log p(x_target|x)
+        # For Gaussian: p(x_target|x) ∝ exp(-||x - x_target||²/(2σ²))
+        # So: ∇_x log p(x_target|x) = (x_target - x) / σ²
+        
+        diff = future_target - future_pred  # Direction towards target
+        
+        # Compute guidance term: gradient of log likelihood
+        future_guidance = diff / (sigma ** 2)
+        
+        # Optional: clip extreme values to prevent numerical instability
+        future_guidance = torch.clamp(future_guidance, -1e2, 1e2)
+        
+        # Assign guidance only to future part
+        guidance_term[:, :, :, T_h:] = future_guidance
+    
+    return guidance_term
 
 
 # ---Log--

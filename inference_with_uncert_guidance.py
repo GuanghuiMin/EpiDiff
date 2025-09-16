@@ -1,17 +1,8 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Inference script with classifier guidance using uncertainty model predictions
-Directly replaces ground truth with uncertainty predictions as guidance targets
+Inference script with steered uncertainty model predictions
 
 Usage:
-python inference_with_uncert_guidance.py \
-    --data COVID-JP \
-    --uncert_file ./algorithm/uncert_out/COVID-JP_uncert_th14_tp14.npz \
-    --guidance_scale 0.3 \
-    --guidance_sigma 0.5 \
-    --T_h 14 --T_p 14 \
-    --batch_size 4 --n_samples 4
+python inference_with_uncert_guidance.py --guidance_scale 0.1 --guidance_sigma 1.0 --batch_size 4
 """
 
 import os
@@ -24,8 +15,7 @@ import pickle
 from timeit import default_timer as timer
 from easydict import EasyDict as edict
 
-# Add DiffODE to path
-sys.path.append('/home/guanghui/DiffODE')
+# sys.path.append('/home/guanghui/DiffODE')
 
 from utils.eval import Metric
 from utils.common_utils import to_device
@@ -664,14 +654,14 @@ def parse_arguments():
     parser.add_argument('--data', type=str, default='COVID-JP', choices=['COVID-JP', 'COVID-US'],
                        help='Dataset name')
     parser.add_argument('--model_path', type=str, 
-                       default='/home/guanghui/DiffODE/output/model/UGnet+32+200+quad+0.1+200+ddpm+14+14+8+True+COVID-JP+0.0+False+False+0.002+8+False+NoneN-200+T_h-14+T_p-14+epsilon_theta-UGnet.dm4stg',
+                       default='/home/guanghui/DiffODE/output/model/1+STGTransformer+32+200+quad+0.1+200+ddpm+14+14+8+True+COVID-JP+0.0+False+False+0.002+8+True+None+False+NoneN-200+T_h-14+T_p-14+epsilon_theta-STGTransformer.dm4stg',
                        help='Path to pretrained model')
     parser.add_argument('--uncert_file', type=str,
                        default='/home/guanghui/DiffODE/algorithm/uncert_out/COVID-JP_uncert_th14_tp14_ALL.npz',
                        help='Path to uncertainty predictions file')
     
     # Model parameters
-    parser.add_argument('--epsilon_theta', type=str, default='UGnet', choices=['UGnet', 'STGTransformer'],
+    parser.add_argument('--epsilon_theta', type=str, default='STGTransformer', choices=['UGnet', 'STGTransformer'],
                        help='Model architecture')
     parser.add_argument('--hidden_size', type=int, default=32, help='Hidden size')
     parser.add_argument('--N', type=int, default=200, help='Diffusion steps')

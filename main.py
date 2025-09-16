@@ -420,7 +420,7 @@ def get_params():
     parser.add_argument("--seed", type=int, default=1)
 
     # model
-    parser.add_argument("--epsilon_theta", type=str, default='UGnet') # UGnet, STGTransformer
+    parser.add_argument("--epsilon_theta", type=str, default='STGTransformer') # UGnet, STGTransformer
     parser.add_argument("--hidden_size", type=int, default=32)
     parser.add_argument("--N", type=int, default=200)
     parser.add_argument("--beta_schedule", type=str, default='quad')  # uniform, quad
@@ -435,7 +435,7 @@ def get_params():
 
     # train
     parser.add_argument("--is_train", type=bool, default=True) # train or evaluate
-    parser.add_argument("--data", type=str, default='COVID-US')
+    parser.add_argument("--data", type=str, default='COVID-JP')
     parser.add_argument("--mask_ratio", type=float, default=0.0) # mask of history data
     parser.add_argument("--is_test", type=bool, default=False)
     parser.add_argument("--nni", type=bool, default=False)

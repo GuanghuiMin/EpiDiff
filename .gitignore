@@ -1,0 +1,102 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+__pycache__
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+.ipynb
+
+# Virtual environment
+.env/
+.venv/
+env/
+venv/
+ENV/
+
+# PyCharm & VSCode
+.idea/
+.vscode/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+coverage.xml
+*.cover
+*.py,cover
+.cache
+nosetests.xml
+test-results.xml
+junit-*.xml
+
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Logs
+*.log
+
+# Output files
+*.out
+*.csv
+*.tsv
+# output/
+
+# Local data files
+# data/
+# *.npy
+# *.npz
+*.pkl
+*.h5
+*.pt
+*.ckpt
+
+# MacOS
+.DS_Store
+
+# Jupyter Notebook output
+*.nbconvert.ipynb
+
+# Huggingface cache
+huggingface/
+*.cache/
+*.huggingface/
+
+# GitHub Copilot / JetBrains logs
+copilot.*
+jetbrains-*
+
+# Optional: ignore model checkpoints and tensorboard logs
+runs/
+checkpoints/
+logs/

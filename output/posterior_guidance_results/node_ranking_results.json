@@ -1,0 +1,74 @@
+{
+  "best_node": 12,
+  "selection_criteria": "best_rmse_improvement",
+  "best_node_metrics": {
+    "rmse_w_uncertainty": 1198.01708984375,
+    "rmse_wo_uncertainty": 1692.63671875,
+    "rmse_baseline": 2345.5859375,
+    "rmse_improvement_wo_uncertainty": 29.2218416929245,
+    "rmse_improvement_baseline": 48.9246129989624,
+    "average_rmse_improvement": 39.07322734594345
+  },
+  "top_10_nodes_by_rmse_improvement": [
+    {
+      "node": 12,
+      "rmse_improvement_wo": 29.2218416929245,
+      "rmse_improvement_base": 48.9246129989624,
+      "average_rmse_improvement": 39.07322734594345
+    },
+    {
+      "node": 10,
+      "rmse_improvement_wo": 48.789504170417786,
+      "rmse_improvement_base": 24.520166218280792,
+      "average_rmse_improvement": 36.65483519434929
+    },
+    {
+      "node": 26,
+      "rmse_improvement_wo": 32.175472378730774,
+      "rmse_improvement_base": 35.29491722583771,
+      "average_rmse_improvement": 33.73519480228424
+    },
+    {
+      "node": 39,
+      "rmse_improvement_wo": 45.634955167770386,
+      "rmse_improvement_base": 9.619234502315521,
+      "average_rmse_improvement": 27.627094835042953
+    },
+    {
+      "node": 13,
+      "rmse_improvement_wo": 16.92524552345276,
+      "rmse_improvement_base": 36.80894672870636,
+      "average_rmse_improvement": 26.86709612607956
+    },
+    {
+      "node": 11,
+      "rmse_improvement_wo": 32.20917284488678,
+      "rmse_improvement_base": 17.379362881183624,
+      "average_rmse_improvement": 24.794267863035202
+    },
+    {
+      "node": 46,
+      "rmse_improvement_wo": 36.589035391807556,
+      "rmse_improvement_base": 10.36728098988533,
+      "average_rmse_improvement": 23.478158190846443
+    },
+    {
+      "node": 27,
+      "rmse_improvement_wo": 29.742246866226196,
+      "rmse_improvement_base": 9.026999771595001,
+      "average_rmse_improvement": 19.3846233189106
+    },
+    {
+      "node": 25,
+      "rmse_improvement_wo": 43.753209710121155,
+      "rmse_improvement_base": -6.806571036577225,
+      "average_rmse_improvement": 18.473319336771965
+    },
+    {
+      "node": 9,
+      "rmse_improvement_wo": 33.32841992378235,
+      "rmse_improvement_base": 1.0034972801804543,
+      "average_rmse_improvement": 17.1659586019814
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "config": {
+    "data": "COVID-JP",
+    "model_path": "/home/guanghui/DiffODE/output/model/2025+STGTransformer+32+200+quad+0.1+200+ddpm+14+7+8+True+COVID-JP+0.0+False+False+0.002+8+True+None+False+NoneN-200+T_h-14+T_p-7+epsilon_theta-STGTransformer.dm4stg",
+    "uncert_file": "/home/guanghui/DiffODE/uncert_out/COVID-JP_uncert_test_th14_tp7.npz",
+    "T_h": 14,
+    "T_p": 7,
+    "hidden_size": 32,
+    "N": 200,
+    "beta_schedule": "quad",
+    "beta_end": 0.1,
+    "sample_steps": 40,
+    "batch_size": 4,
+    "n_samples": 4,
+    "guidance_scale": 0.08,
+    "tau": 0.2,
+    "sigma_min": 1.5,
+    "sigma_max": 3.0,
+    "smooth_k": 7,
+    "seed": 0,
+    "output_dir": "./output/test_mechanistic_display"
+  },
+  "metrics": {
+    "baseline": {
+      "mae": 29.65851593017578,
+      "rmse": 61.9611793314219,
+      "mape": 1876820.703125,
+      "crps": 0.2388134755586323,
+      "mis": 537.4212036132812,
+      "time": 98.72057453589514
+    },
+    "guided": {
+      "mae": 27.98416519165039,
+      "rmse": 67.45376382312739,
+      "mape": 2366104.296875,
+      "crps": 0.2329785196404708,
+      "mis": 590.6500854492188,
+      "time": 98.71117949625477
+    },
+    "mechanistic": {
+      "mae": 98.76941855401307,
+      "rmse": 309.9720241153055,
+      "mape": 70.58604749146194,
+      "crps": 0.4714559979515318,
+      "mis": 3787.969667477284,
+      "time": 0.18786657834425569
+    },
+    "improve_mae_%": 5.645430088043213,
+    "improve_rmse_%": -8.864557697209733
+  },
+  "mechanistic_comparisons": {
+    "baseline_vs_mechanistic_mae_%": -69.97196463806587,
+    "guided_vs_mechanistic_mae_%": -71.66717633723138,
+    "baseline_vs_mechanistic_rmse_%": -80.01071886785074,
+    "guided_vs_mechanistic_rmse_%": -78.23875750863391
+  },
+  "timing": {
+    "baseline_total": 48.81354807829484,
+    "guided_total": 49.148313427343965,
+    "baseline_per_batch": 2.0338978365956186,
+    "guided_per_batch": 2.0478463928059987
+  },
+  "dataset_info": {
+    "full_test_set_size": 95,
+    "full_test_range": [
+      431,
+      525
+    ],
+    "uncertainty_coverage": 102,
+    "uncertainty_range": [
+      431,
+      532
+    ],
+    "note": "Now using FULL test set like main.py, with complete uncertainty coverage"
+  }
+}

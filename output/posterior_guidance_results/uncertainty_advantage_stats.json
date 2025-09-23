@@ -1,0 +1,26 @@
+{
+  "overall_improvement_vs_wo_uncert": 10.142630577087402,
+  "overall_improvement_vs_baseline": 15.91328239440918,
+  "best_windows": [
+    60,
+    61,
+    70
+  ],
+  "best_window_improvements": {
+    "60": {
+      "improvement_vs_wo_uncert": 50.23955535888672,
+      "improvement_vs_baseline": 62.56629943847656,
+      "combined_improvement": 56.40292739868164
+    },
+    "61": {
+      "improvement_vs_wo_uncert": 49.22859191894531,
+      "improvement_vs_baseline": 62.95808410644531,
+      "combined_improvement": 56.09333801269531
+    },
+    "70": {
+      "improvement_vs_wo_uncert": 45.71363830566406,
+      "improvement_vs_baseline": 61.505741119384766,
+      "combined_improvement": 53.60968780517578
+    }
+  }
+}

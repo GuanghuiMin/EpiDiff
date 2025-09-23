@@ -1,0 +1,74 @@
+{
+  "config": {
+    "data": "influenza-US",
+    "model_path": "/home/guanghui/DiffODE/output/model/42+STGTransformer+32+200+quad+0.1+200+ddpm+14+7+8+True+influenza-US+0.0+False+False+0.002+8+True+None+False+NoneN-200+T_h-14+T_p-7+epsilon_theta-STGTransformer.dm4stg",
+    "uncert_file": "/home/guanghui/DiffODE/uncert_out/influenza-US_uncert_test_th14_tp7_hsk1.npz",
+    "T_h": 14,
+    "T_p": 7,
+    "hidden_size": 32,
+    "N": 200,
+    "beta_schedule": "quad",
+    "beta_end": 0.1,
+    "sample_steps": 40,
+    "batch_size": 4,
+    "n_samples": 4,
+    "guidance_scale": 10.0,
+    "tau": 1.0,
+    "sigma_min": 0.1,
+    "sigma_max": 1.0,
+    "smooth_k": 7,
+    "seed": 2025,
+    "output_dir": "./output/posterior_guidance_results"
+  },
+  "metrics": {
+    "baseline": {
+      "mae": 232.50888061523438,
+      "rmse": 464.752685546875,
+      "mape": 2548.236083984375,
+      "correlation": 0.11371743182756174,
+      "total_points": 6783
+    },
+    "w_uncertainty": {
+      "mae": 81.96414947509766,
+      "rmse": 303.24981689453125,
+      "mape": 247.4940643310547,
+      "correlation": 0.4845673763153811,
+      "total_points": 6783
+    },
+    "wo_uncertainty": {
+      "mae": 145.6239776611328,
+      "rmse": 326.78448486328125,
+      "mape": 1301.082763671875,
+      "correlation": 0.27997680662787283,
+      "total_points": 6783
+    },
+    "mechanistic": {
+      "mae": 81.53608290512139,
+      "rmse": 322.92661933216823,
+      "mape": 96.1851102688067,
+      "correlation": 0.4005242539122366,
+      "total_points": 6783
+    }
+  },
+  "timing": {
+    "baseline_total": 14.123555998317897,
+    "w_uncertainty_total": 15.451487105805427,
+    "wo_uncertainty_total": 14.23367725359276,
+    "baseline_per_batch": 2.8247111996635796,
+    "w_uncertainty_per_batch": 3.090297421161085,
+    "wo_uncertainty_per_batch": 2.846735450718552
+  },
+  "dataset_info": {
+    "full_test_set_size": 19,
+    "full_test_range": [
+      126,
+      144
+    ],
+    "uncertainty_coverage": 26,
+    "uncertainty_range": [
+      126,
+      151
+    ],
+    "note": "Now using simple calculation method consistent with main.py"
+  }
+}

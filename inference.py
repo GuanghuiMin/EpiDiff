@@ -558,7 +558,6 @@ def run(args):
     print(f"  Test samples processed: {total_samples_processed} (from {len(all_true)} batches)")
     print(f"  Expected MAE range (similar to main.py): ~90-100")
 
-    # 保存
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Prepare metrics for JSON saving

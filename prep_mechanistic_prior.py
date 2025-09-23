@@ -30,7 +30,6 @@ def run_test_windows_only(
     direct_incidence: bool = False,
     I_PATH: str = None,
 ):
-    # ---- Load SIR ----
     data = np.load(SIR_PATH, allow_pickle=True).item()
     sir = data["SIR"]  # (T, V, 3) or (T, V, 2)
     T, V, C = sir.shape
@@ -51,15 +50,13 @@ def run_test_windows_only(
             print("Using fixed S values of 1e6 for all nodes and time steps")
             
         else:
-            I_data = np.load(I_PATH)  # (T, V, 1)
+            I_data = np.load(I_PATH)
             if I_data.ndim == 3 and I_data.shape[2] == 1:
-                I = I_data[:, :, 0]  # 提取第一列，变成 (T, V)
+                I = I_data[:, :, 0]
             else:
                 I = I_data
             print(f"Using I data from I_PATH with shape: {I.shape}")
-            # 确保形状匹配
             assert I.shape == (T, V), f"I_PATH data shape {I.shape} doesn't match SIR data shape (T={T}, V={V})"
-            # 对于非txt文件，使用原来的S数据
             S = sir[:, :, 0]
     else:
         I = sir[:, :, 1]
@@ -89,7 +86,6 @@ def run_test_windows_only(
     uncert_test = np.full((N_te, V, T_p), np.nan, dtype=float)
     y_future_test = np.full((N_te, V, T_p), np.nan, dtype=float)
 
-    # ---- Helper: compute one window/node ----
     def process_one_window_node(label_start: int, v: int):
         hist_start = label_start - T_h
         hist_end = label_start
@@ -97,11 +93,9 @@ def run_test_windows_only(
         fut_end = label_start + T_p
 
         if direct_incidence:
-            # SIR第二列就是每日新增
             y_hist = I[hist_start:hist_end, v]
             y_future = I[fut_start:fut_end, v]
         else:
-            # SIR第二列是累计病例，需要作差
             y_hist = I[hist_start+1:hist_end+1, v] - I[hist_start:hist_end, v]
             if fut_end + 1 <= T:
                 y_future = I[fut_start+1:fut_end+1, v] - I[fut_start:fut_end, v]
@@ -159,7 +153,6 @@ def run_test_windows_only(
             uncert_test[idx_te, v, :] = u
             y_future_test[idx_te, v, :] = y_future
 
-    # ---- MAE and RMSE for point estimates vs ground truth ----
     valid_mask = ~(np.isnan(y_hat_test) | np.isnan(y_future_test))
     if np.any(valid_mask):
         mae_overall = np.mean(np.abs(y_hat_test[valid_mask] - y_future_test[valid_mask]))
@@ -190,7 +183,6 @@ def run_test_windows_only(
         rmse_per_node = np.full(V, np.nan)
         print("No valid predictions found for MAE/RMSE computation")
 
-    # ---- Save ----
     meta = dict(
         T_h=int(T_h),
         T_p=int(T_p),
@@ -233,21 +225,15 @@ def run_test_windows_only(
     print(f"MAE/RMSE per step shape: {mae_per_step.shape}, MAE/RMSE per node shape: {mae_per_node.shape}")
 
 if __name__ == "__main__":
-    # SIR_PATH = "/home/guanghui/DiffODE/data/dataset/COVID-US/us20200415_20210415.npy"
-    # I_PATH = "/home/guanghui/DiffODE/data/dataset/COVID-US/cases.npy"
-    # DATA_NAME = "COVID-US"
-    
-    # 使用influenza数据
-    SIR_PATH = "/home/guanghui/DiffODE/data/dataset/influenza-US/flu_us_20190107_20211227.npy"  # 占位，实际会被I_PATH数据替换
-    I_PATH = "/home/guanghui/iclr26/data/us_flu.txt"
+    SIR_PATH = "data/dataset/influenza-US/flu_us_20190107_20211227.npy"
+    I_PATH = "data/dataset/influenza-US/us_flu.txt"
     DATA_NAME = "influenza-US"
     T_h = 14
     T_p = 14
     hist_smooth_k = 1
-    test_start_id = int(158 * 0.8)  # 158个时间步，80%作为训练
+    test_start_id = int(158 * 0.8)
     OUT_PATH = f"uncert_out/{DATA_NAME}_uncert_test_th{T_h}_tp{T_p}_hsk{hist_smooth_k}.npz"
 
-    # 自动切换 SIR/SI/直接新增
     if DATA_NAME in ["COVID-US", "influenza-US"]:
         forecast_point_and_uncertainty = forecast_point_and_uncertainty_si
         direct_incidence = True
@@ -279,5 +265,5 @@ if __name__ == "__main__":
         hist_smooth_k=hist_smooth_k,
         forecast_point_and_uncertainty=forecast_point_and_uncertainty,
         direct_incidence=direct_incidence,
-        I_PATH=I_PATH,  # 传入I_PATH参数
+        I_PATH=I_PATH,
     )

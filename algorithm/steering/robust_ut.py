@@ -19,7 +19,6 @@ def clamp_eta(eta, bounds_logR0_logTinf):
     return np.array([np.clip(eta[0], lb_R0, ub_R0),
                      np.clip(eta[1], lb_T,  ub_T )], dtype=float)
 
-# ---------- SIR ----------
 def sir_ode(state, t, beta, gamma):
     S, I, R = state
     dS = -beta * S * I
@@ -59,7 +58,6 @@ def forward_incidence_future(init_state, pop, h, theta):
 
 
 def nb_nll(y, mu, alpha):
-    """NB 负对数似然；size=alpha, prob=alpha/(alpha+mu)"""
     if alpha <= 0: return 1e10
     y = np.asarray(y)
     if not np.issubdtype(y.dtype, np.integer):
@@ -155,7 +153,6 @@ def laplace_cov_eta_fixed_init(y_hist, x0_norm, N, eta_hat, alpha_nb=5.0, prior_
     Sigma = V2 @ np.diag(w2) @ V2.T
     return Sigma
 
-# ---------- UT ----------
 def ut_sigma_points(mu, Sigma, alpha=0.2, beta=2.0, kappa=None):
     mu = np.asarray(mu, dtype=float)
     Sigma = np.asarray(Sigma, dtype=float)
@@ -214,7 +211,6 @@ def weighted_geometric_mean(samples, weights):
     return np.expm1(m)
 
 def _fallback_from_hist_mean(y_hist, h, alpha_nb=5.0):
-    """用历史窗口均值做点估计；不确定性用 NB 方差 mu + mu^2/alpha。"""
     if len(y_hist) == 0 or not np.all(np.isfinite(y_hist)):
         mu_hist = 0.0
     else:
@@ -231,37 +227,22 @@ def forecast_point_and_uncertainty_robust(
     y_future,               # (T_p,)
     sir_hist,               # (T_h,3)
     alpha_nb = 5.0,
-    # eta prior / bounds
     bounds_logR0_logTinf=((np.log(0.8), np.log(5.0)), (np.log(2.0), np.log(10.0))),
     prior_mu=None, prior_sd=None,
-    # UT
     ut_alpha=0.2, ut_beta=2.0, ut_kappa=None,
-    # robust
     trim_frac=0.15, max_neg_frac=0.0,
-    # clipping
     clip_nonneg=True,
-    # 幅度校准 s 的范围
     calib_s_min=0.3, calib_s_max=3.0,
-    # 可选：评测时提供的未来 SIR（逐步对齐起点）
     sir_future_sequence=None,
-    # 触发兜底的阈值（单步）
-    max_inc_val=1e6,                # 绝对爆炸阈值
-    max_ratio_vs_hist=100.0,        # 相对于历史均值的倍率阈值
-    # ===== 加速关键开关 =====
-    compute_sigma_every=4,          # 每隔多少步重算一次协方差；0/1 表示每步都算
-    hess_eps=5e-4,                  # 数值 Hessian 步长
-    lbfgs_maxiter=150,              # L-BFGS 最大迭代
-    lbfgs_ftol=1e-6,                # L-BFGS 容差
-    # 新增：历史窗口滑动均值平滑
-    hist_smooth_k=1                 # 滑动平均窗口大小，=1时不做平滑
+    max_inc_val=1e6,
+    max_ratio_vs_hist=100.0,
+    compute_sigma_every=4,
+    hess_eps=5e-4,
+    lbfgs_maxiter=150,
+    lbfgs_ftol=1e-6,
+    hist_smooth_k=1
 ):
-    """
-    返回:
-      y_hat_all: (T_p,)
-      u_all:     (T_p,)
-    """
     def smooth_hist(y, k):
-        """仅用当前及之前的k-1天，y[-1]是最新，滑动均值（不泄漏未来）"""
         y = np.asarray(y, dtype=float)
         out = np.zeros_like(y)
         for i in range(len(y)):
@@ -295,13 +276,11 @@ def forecast_point_and_uncertainty_robust(
     Sigma_eta_cached = None
 
     for step in range(T_p):
-        # ===== 历史窗口平滑处理 =====
         if hist_smooth_k > 1:
             y_hist_for_est = smooth_hist(y_hist_roll, hist_smooth_k)
         else:
             y_hist_for_est = y_hist_roll
 
-        # 1) MAP
         eta_hat, pr_mu, pr_sd = map_estimate_eta_fixed_init(
             y_hist_for_est, x0_hist, N_tr, alpha_nb=alpha_nb,
             prior_mu=prior_mu, prior_sd=prior_sd,
@@ -309,7 +288,6 @@ def forecast_point_and_uncertainty_robust(
             maxiter=lbfgs_maxiter, ftol=lbfgs_ftol
         )
 
-        # ...后续与原来一致
         need_sigma = (compute_sigma_every in (0, 1)) or (step % compute_sigma_every == 0) or (Sigma_eta_cached is None)
         if need_sigma:
             Sigma_eta = laplace_cov_eta_fixed_init(
@@ -391,51 +369,3 @@ def forecast_point_and_uncertainty_robust(
         y_hist_roll = np.concatenate([y_hist_roll, [y_future[step]]])
 
     return y_hat_all, u_all
-
-# =========================
-# Minimal Example
-# =========================
-if __name__ == "__main__":
-    data = np.load("/home/guanghui/DiffODE/data/dataset/COVID-JP/jp20200401_20210921.npy",
-                   allow_pickle=True).item()
-    sir = data["SIR"]  # (T, V, 3)
-    T, V, _ = sir.shape
-    v = 20
-    T_h, T_p = 14, 7
-    label_start = 463
-
-    S = sir[:, :, 0]; I = sir[:, :, 1]; R = sir[:, :, 2]
-    hist_start = label_start - T_h
-    hist_end   = label_start
-    fut_start  = label_start
-    fut_end    = label_start + T_p
-
-    sir_hist = np.stack([S[hist_start:hist_end, v],
-                         I[hist_start:hist_end, v],
-                         R[hist_start:hist_end, v]], axis=-1)
-
-    # incidence from S-diffs (counts)
-    S_hist = S[hist_start:hist_end, v]
-    S_fut  = S[fut_start-1:fut_end, v]
-    y_hist = np.maximum(S_hist[:-1] - S_hist[1:], 0.0)  # (T_h-1,)
-    y_true = np.maximum(S_fut[:-1]  - S_fut[1:],  0.0)  # (T_p,)
-
-    y_hat, u = forecast_point_and_uncertainty_robust(
-        y_hist=y_hist,
-        y_future=y_true,
-        sir_hist=sir_hist,
-        alpha_nb=5.0,
-        # UT & robust
-        ut_alpha=0.25, ut_beta=2.0,
-        trim_frac=0.2, max_neg_frac=0.0,
-        clip_nonneg=True
-    )
-
-    print("y_hist:", y_hist.astype(int))
-    print("y_true:", y_true.astype(int))
-    print("y_hat :", np.round(y_hat, 2))
-    print("uncert:", np.round(u, 2))
-    diff = y_hat - y_true
-    mae = float(np.mean(np.abs(diff)))
-    rmse = float(np.sqrt(np.mean(diff**2)))
-    print(f"MAE={mae:.3f}, RMSE={rmse:.3f}")

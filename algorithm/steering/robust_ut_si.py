@@ -429,7 +429,8 @@ def forecast_point_and_uncertainty_robust(
             y_hat_step, u_step = _fallback_from_hist_mean(y_hist_roll, 1, alpha_nb=alpha_nb)
             y_hat_all[step] = y_hat_step[0]
             u_all[step]     = u_step[0]
-            y_hist_roll = np.concatenate([y_hist_roll, [y_future[step]]])
+            # Use predicted value instead of true future value to avoid data leakage
+            y_hist_roll = np.concatenate([y_hist_roll, [y_hat_step[0]]])
             continue
 
         keep_mask = robust_filter_trajectories(samples, trim_frac=trim_frac, max_neg_frac=max_neg_frac)
@@ -439,7 +440,8 @@ def forecast_point_and_uncertainty_robust(
             y_hat_step, u_step = _fallback_from_hist_mean(y_hist_roll, 1, alpha_nb=alpha_nb)
             y_hat_all[step] = y_hat_step[0]
             u_all[step]     = u_step[0]
-            y_hist_roll = np.concatenate([y_hist_roll, [y_future[step]]])
+            # Use predicted value instead of true future value to avoid data leakage
+            y_hist_roll = np.concatenate([y_hist_roll, [y_hat_step[0]]])
             continue
 
         y_hat_step = weighted_geometric_mean(kept.reshape(-1,1), w_kept).item()
@@ -457,6 +459,7 @@ def forecast_point_and_uncertainty_robust(
         y_hat_all[step] = y_hat_step
         u_all[step]     = u_step
 
-        y_hist_roll = np.concatenate([y_hist_roll, [y_future[step]]])
+        # Use predicted value instead of true future value to avoid data leakage
+        y_hist_roll = np.concatenate([y_hist_roll, [y_hat_step]])
 
     return y_hat_all, u_all

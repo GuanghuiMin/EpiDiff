@@ -449,9 +449,9 @@ def forecast_point_and_uncertainty_robust(
             y_hat_step, _ = _fallback_from_hist_mean(y_hist_roll, 1, alpha_nb=alpha_nb)
             y_hat_step = y_hat_step[0]
 
-        diff  = y_future[step] - kept
         w_norm = w_kept / w_kept.sum()
-        u_step = float(np.sum(w_norm * (diff**2)))
+        mean_kept = np.sum(w_norm * kept)
+        u_step = float(np.sum(w_norm * ((kept - mean_kept)**2)))
         u_step = max(u_step, 0.0)
 
         y_hat_all[step] = y_hat_step

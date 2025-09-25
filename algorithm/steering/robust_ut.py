@@ -360,7 +360,8 @@ def forecast_point_and_uncertainty_robust(
 
         diff  = y_future[step] - kept
         w_norm = w_kept / w_kept.sum()
-        u_step = float(np.sum(w_norm * (diff**2)))
+        mean_kept = np.sum(w_norm * kept)
+        u_step = float(np.sum(w_norm * ((kept - mean_kept)**2)))
         u_step = max(u_step, 0.0)
 
         y_hat_all[step] = y_hat_step

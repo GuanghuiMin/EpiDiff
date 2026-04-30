@@ -1,6 +1,6 @@
 # EpiDiff
 
-Code for paper *"Towards Reliable Spatiotemporal Epidemic Forecasting via Steering Diffusion Inference"*.
+Code for ICML'26 paper "Bridging Dynamics and Data: A Unified Diffusion Framework for Mechanistically-Informed Epidemic Forecasting"
 
 This repository implements a diffusion-based framework for reliable spatiotemporal epidemic forecasting with mechanistic guidance. Built on **[DiffSTG](https://github.com/wenhaomin/DiffSTG)**.
 

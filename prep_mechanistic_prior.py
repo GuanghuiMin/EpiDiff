@@ -91,36 +91,57 @@ def run_test_windows_only(
         hist_end = label_start
         fut_start = label_start
         fut_end = label_start + T_p
-
+    
+        # Historical observations used by the mechanistic forecaster.
+        # This is the only target signal passed into the mechanistic model.
         if direct_incidence:
             y_hist = I[hist_start:hist_end, v]
-            y_future = I[fut_start:fut_end, v]
         else:
             y_hist = I[hist_start+1:hist_end+1, v] - I[hist_start:hist_end, v]
+    
+        # Future observations are constructed only for evaluation/storage.
+        # They are never passed into forecast_point_and_uncertainty.
+        if direct_incidence:
+            y_future = I[fut_start:fut_end, v]
+        else:
             if fut_end + 1 <= T:
                 y_future = I[fut_start+1:fut_end+1, v] - I[fut_start:fut_end, v]
             else:
-                available_end = min(fut_end, T-1)
+                available_end = min(fut_end, T - 1)
                 if available_end > fut_start:
-                    y_future_partial = I[fut_start+1:available_end+1, v] - I[fut_start:available_end, v]
+                    y_future_partial = (
+                        I[fut_start+1:available_end+1, v]
+                        - I[fut_start:available_end, v]
+                    )
                     last_val = y_future_partial[-1] if len(y_future_partial) > 0 else 0.0
                     remaining_len = fut_end - available_end
-                    y_future = np.concatenate([y_future_partial, np.full(remaining_len, last_val)])
+                    y_future = np.concatenate(
+                        [y_future_partial, np.full(remaining_len, last_val)]
+                    )
                 else:
-                    current_val = I[fut_start, v] - I[fut_start-1, v] if fut_start > 0 else 0.0
+                    current_val = (
+                        I[fut_start, v] - I[fut_start-1, v]
+                        if fut_start > 0 else 0.0
+                    )
                     y_future = np.full(T_p, max(0.0, current_val))
-
+    
         y_hist = np.clip(y_hist, 0.0, None)
         y_future = np.clip(y_future, 0.0, None)
+    
         sir_hist = np.stack(
-            [S[hist_start:hist_end, v], I[hist_start:hist_end, v], np.zeros(hist_end-hist_start)],
+            [
+                S[hist_start:hist_end, v],
+                I[hist_start:hist_end, v],
+                np.zeros(hist_end - hist_start),
+            ],
             axis=-1,
         )
+    
         try:
             y_hat, u = forecast_point_and_uncertainty(
                 y_hist=y_hist,
-                y_future=y_future,
                 sir_hist=sir_hist,
+                horizon=T_p,
                 alpha_nb=alpha_nb,
                 ut_alpha=ut_alpha,
                 ut_beta=ut_beta,
@@ -139,6 +160,7 @@ def run_test_windows_only(
             )
         except Exception:
             return None
+    
         return y_hat, u, y_future
 
     # ---- Compute for TEST ONLY ----

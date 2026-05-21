@@ -203,7 +203,6 @@ def forecast_point_and_uncertainty_robust(
         y_hat_all[step] = y_hat_step
         u_all[step] = u_step
 
-        # Autoregressive rollout uses the model's own prediction, not the true future.
         y_hist_roll = np.concatenate([y_hist_roll, [y_hat_step]])
 
     return y_hat_all, u_all
